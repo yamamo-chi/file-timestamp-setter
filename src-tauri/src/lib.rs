@@ -1,12 +1,48 @@
 use filetime::{FileTime, set_file_mtime};
-use tauri::Emitter;
 use base64::{Engine as _, engine::general_purpose};
 use std::fs;
 use std::path::Path;
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize)]
+struct FileInfo {
+    path: String,
+    modified_time: i64, // Unix timestamp in seconds
+}
+
+#[derive(Deserialize)]
+struct FileTimestamp {
+    path: String,
+    timestamp: i64,
+}
 
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+#[tauri::command]
+fn get_files_info(files: Vec<String>) -> Result<Vec<FileInfo>, String> {
+    let mut result = Vec::new();
+
+    for file_path in files {
+        let metadata = fs::metadata(&file_path)
+            .map_err(|e| format!("Failed to get metadata for {}: {}", file_path, e))?;
+
+        let modified = metadata.modified()
+            .map_err(|e| format!("Failed to get modified time for {}: {}", file_path, e))?;
+
+        let timestamp = modified.duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| format!("Failed to convert time for {}: {}", file_path, e))?
+            .as_secs() as i64;
+
+        result.push(FileInfo {
+            path: file_path,
+            modified_time: timestamp,
+        });
+    }
+
+    Ok(result)
 }
 
 #[tauri::command]
@@ -25,6 +61,16 @@ fn set_file_times_with_interval(files: Vec<String>, base_timestamp: i64, interva
         let timestamp = base_timestamp + offset;
         let time = FileTime::from_unix_time(timestamp, 0);
         set_file_mtime(&file_path, time).map_err(|e| format!("Failed to set time for {}: {}", file_path, e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_individual_file_times(file_timestamps: Vec<FileTimestamp>) -> Result<(), String> {
+    for item in file_timestamps {
+        let time = FileTime::from_unix_time(item.timestamp, 0);
+        set_file_mtime(&item.path, time)
+            .map_err(|e| format!("Failed to set time for {}: {}", item.path, e))?;
     }
     Ok(())
 }
@@ -60,14 +106,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::DragDrop(event) = event {
-                 if let tauri::DragDropEvent::Drop { paths, position: _ } = event {
-                     window.emit("file-dropped-custom", paths).unwrap();
-                 }
-            }
-        })
-        .invoke_handler(tauri::generate_handler![greet, set_file_times, set_file_times_with_interval, get_image_data])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            set_file_times,
+            set_file_times_with_interval,
+            set_individual_file_times,
+            get_files_info,
+            get_image_data
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

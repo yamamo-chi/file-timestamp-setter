@@ -7,12 +7,12 @@ interface FileDropZoneProps {
     className?: string;
 }
 
-export function FileDropZone({ onFilesDropped, onClick, className }: FileDropZoneProps & { onClick?: () => void }) {
+export function FileDropZone({ onFilesDropped: _onFilesDropped, onClick, className }: FileDropZoneProps & { onClick?: () => void }) {
     const [isDragging, setIsDragging] = useState(false);
 
-    // We'll trust the parent to handle the actual file drop data via onFilesDropped
-    // but we can still listen for hover to show visual feedback locally if needed,
-    // or better yet, just use standard onDragEnter/Leave for CSS states.
+    // Tauri handles file drops via the 'tauri://file-drop' event at the window level.
+    // This component only provides visual feedback for drag states.
+    // We don't use onDrop here to avoid interfering with Tauri's native event handling.
 
     return (
         <div
@@ -24,43 +24,17 @@ export function FileDropZone({ onFilesDropped, onClick, className }: FileDropZon
                 className
             )}
             onClick={onClick}
-            onDragEnter={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
+            onDragEnter={() => {
                 setIsDragging(true);
             }}
             onDragOver={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
+                e.preventDefault(); // Necessary to allow drop
                 if (!isDragging) setIsDragging(true);
             }}
             onDragLeave={() => setIsDragging(false)}
-            onDrop={(e) => {
-                e.preventDefault();
+            onDrop={() => {
                 setIsDragging(false);
-                // HTML5 fallback handled here for specific drop zone
-                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                    const paths: string[] = [];
-                    // @ts-ignore
-                    for (let i = 0; i < e.dataTransfer.files.length; i++) {
-                        // @ts-ignore
-                        const file = e.dataTransfer.files[i];
-                        // Try to get path from various properties used by WebView2/Tauri
-                        // @ts-ignore
-                        const path = file.path || file.getAsFile?.()?.path || file.name;
-                        // Note: Standard browser file.name is just name, but Tauri injects path often.
-                        // If path is missing, this won't work for backend, but we can't do much else.
-                        if (path && path.includes('\\') || path.includes('/')) {
-                            paths.push(path);
-                        } else {
-                            // Debug log if needed
-                            console.log("File object missing full path:", file);
-                        }
-                    }
-                    if (paths.length > 0) {
-                        onFilesDropped(paths);
-                    }
-                }
+                // Let Tauri handle the actual file drop via 'tauri://file-drop' event
             }}
         >
             <div className="bg-slate-800 p-4 rounded-full mb-4">

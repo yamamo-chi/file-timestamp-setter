@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useCallback } from "react";
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -20,19 +20,21 @@ import {
 import { format } from "date-fns";
 import { FileDropZone } from "./components/FileDropZone";
 import { SortableItem } from "./components/SortableItem";
-import { ArrowDownAZ, ArrowUpAZ, Clock, Trash2 } from "lucide-react";
+import { ArrowDownUp, Trash2, ArrowLeftRight } from "lucide-react";
 import { cn } from "./lib/utils";
 
+interface FileInfo {
+  path: string;
+  modifiedTime: number; // Unix timestamp in seconds
+  customTimestamp?: number; // User-edited timestamp
+}
+
 function App() {
-  const [files, setFiles] = useState<string[]>([]);
-  const [selectedDate, setSelectedDate] = useState<string>(
-    format(new Date(), "yyyy-MM-dd'T'HH:mm")
-  );
-  const [seconds, setSeconds] = useState<number>(0);
-  const [intervalValue, setIntervalValue] = useState<number>(0);
-  const [intervalUnit, setIntervalUnit] = useState<'seconds' | 'minutes' | 'hours'>('seconds');
+  const [files, setFiles] = useState<FileInfo[]>([]);
   const [message, setMessage] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [swapTimestampsOnReorder, setSwapTimestampsOnReorder] = useState(false);
+  const processingFilesRef = useRef<Set<string>>(new Set());
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -41,30 +43,81 @@ function App() {
     })
   );
 
-  const handleFilesDropped = (newFiles: string[]) => {
-    setFiles((prev) => {
-      // Filter duplicates and invalid inputs
-      const uniqueNewFiles = newFiles
-        .filter((f) => f && typeof f === 'string' && !prev.includes(f));
-      return [...prev, ...uniqueNewFiles];
-    });
-    setMessage("");
+  // Normalize path for comparison (handle different separators and case)
+  const normalizePath = (path: string): string => {
+    return path.replace(/\\/g, '/').toLowerCase();
   };
+
+  const handleFilesDropped = useCallback(async (newFiles: string[]) => {
+    // Filter out duplicates and files currently being processed
+    // Use normalized paths for comparison to handle Windows path variations
+    const existingNormalizedPaths = new Set(files.map(f => normalizePath(f.path)));
+    const processingNormalizedPaths = new Set(
+      Array.from(processingFilesRef.current).map(normalizePath)
+    );
+
+    const uniqueNewFiles = newFiles
+      .filter((f) => {
+        if (!f || typeof f !== 'string') return false;
+        const normalized = normalizePath(f);
+        return !existingNormalizedPaths.has(normalized) &&
+               !processingNormalizedPaths.has(normalized);
+      });
+      
+    if (uniqueNewFiles.length === 0) return;
+
+    // Mark files as being processed
+    uniqueNewFiles.forEach(f => processingFilesRef.current.add(f));
+
+    try {
+      // Get file info from backend
+      const filesInfo = await invoke<Array<{ path: string; modified_time: number }>>(
+        "get_files_info",
+        { files: uniqueNewFiles }
+      );
+
+      const newFileInfos: FileInfo[] = filesInfo.map(info => ({
+        path: info.path,
+        modifiedTime: info.modified_time,
+      }));
+
+      setFiles((prev) => [...prev, ...newFileInfos]);
+      setMessage("");
+    } catch (error) {
+      console.error("Failed to get file info:", error);
+      setMessage(`Error loading file info: ${error}`);
+    } finally {
+      // Remove from processing set
+      uniqueNewFiles.forEach(f => processingFilesRef.current.delete(f));
+    }
+  }, [files]);
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
 
     if (over && active.id !== over.id) {
       setFiles((items) => {
-        const oldIndex = items.indexOf(active.id as string);
-        const newIndex = items.indexOf(over.id as string);
-        return arrayMove(items, oldIndex, newIndex);
+        const oldIndex = items.findIndex(f => f.path === active.id);
+        const newIndex = items.findIndex(f => f.path === over.id);
+
+        const newItems = [...items];
+
+        // Only swap timestamps if the toggle is enabled
+        if (swapTimestampsOnReorder) {
+          const tempTimestamp = newItems[oldIndex].customTimestamp ?? newItems[oldIndex].modifiedTime;
+          const targetTimestamp = newItems[newIndex].customTimestamp ?? newItems[newIndex].modifiedTime;
+
+          newItems[oldIndex] = { ...newItems[oldIndex], customTimestamp: targetTimestamp };
+          newItems[newIndex] = { ...newItems[newIndex], customTimestamp: tempTimestamp };
+        }
+
+        return arrayMove(newItems, oldIndex, newIndex);
       });
     }
   };
 
-  const removeFile = (fileToRemove: string) => {
-    setFiles(files.filter((f) => f !== fileToRemove));
+  const removeFile = (pathToRemove: string) => {
+    setFiles(files.filter((f) => f.path !== pathToRemove));
   };
 
   const clearFiles = () => {
@@ -72,76 +125,23 @@ function App() {
     setMessage("");
   };
 
-  const sortFiles = (direction: 'asc' | 'desc') => {
-    setFiles((prev) => {
-      const sorted = [...prev].sort((a, b) => {
-        const nameA = a.split(/[/\\]/).pop()?.toLowerCase() || "";
-        const nameB = b.split(/[/\\]/).pop()?.toLowerCase() || ""; // Fixed nameB
-        return direction === 'asc'
-          ? nameA.localeCompare(nameB)
-          : nameB.localeCompare(nameA);
-      });
-      return sorted;
-    });
-  };
-
-  // Debug logging
-  const log = (msg: string) => {
-    // Append to message for user visibility if needed, or just keep latest
-    setMessage(prev => prev ? `${prev}\n${msg}` : msg);
+  const reverseOrder = () => {
+    setFiles((prev) => [...prev].reverse());
   };
 
   React.useEffect(() => {
-    // Listener for 'tauri://file-drop' (standard v1/v2 file drop)
-    const unlistenFileDropPromise = listen('tauri://file-drop', (event) => {
-      log(`tauri://file-drop event received: ${JSON.stringify(event)}`);
-      // Standard payload is string[]
-      const payloadFiles = event.payload as string[];
-      if (payloadFiles && Array.isArray(payloadFiles) && payloadFiles.length > 0) {
-        handleFilesDropped(payloadFiles);
-      } else {
-        log("tauri://file-drop received but no files found in payload or invalid format.");
-      }
-    });
-
-    // Listener for 'tauri://drag-drop' (possibly used in reference project or some v2 contexts)
+    // Use 'tauri://drag-drop' event (Tauri v2)
     const unlistenDragDropPromise = listen('tauri://drag-drop', (event) => {
-      log(`tauri://drag-drop event received: ${JSON.stringify(event)}`);
-      // Reference project payload: { paths: string[] }
-      const payload = event.payload as { paths: string[] } | undefined;
+      const payload = event.payload as { paths: string[] };
       if (payload && payload.paths && Array.isArray(payload.paths) && payload.paths.length > 0) {
         handleFilesDropped(payload.paths);
-      } else {
-        log("tauri://drag-drop received but invalid payload format.");
-      }
-    });
-
-    const unlistenHoverPromise = listen('tauri://file-drop-hover', (event) => {
-      // Just log for debugging, don't spam UI
-      console.log("Hover: ", event);
-    });
-
-    const unlistenCancelledPromise = listen('tauri://file-drop-cancelled', () => {
-      console.log("Cancelled");
-    });
-
-    // Custom event emitted manually from Rust
-    const unlistenCustomPromise = listen('file-dropped-custom', (event) => {
-      log(`Custom file drop event received: ${JSON.stringify(event)}`);
-      const payload = event.payload as string[];
-      if (payload && Array.isArray(payload) && payload.length > 0) {
-        handleFilesDropped(payload);
       }
     });
 
     return () => {
-      unlistenFileDropPromise.then(unlisten => unlisten());
       unlistenDragDropPromise.then(unlisten => unlisten());
-      unlistenCustomPromise.then(unlisten => unlisten());
-      unlistenHoverPromise.then(unlisten => unlisten());
-      unlistenCancelledPromise.then(unlisten => unlisten());
     };
-  }, []);
+  }, [handleFilesDropped]);
 
   const openFileDialog = async () => {
     try {
@@ -165,7 +165,7 @@ function App() {
       }
     } catch (err) {
       console.error(err);
-      log(`Error opening file dialog: ${err}`);
+      setMessage(`Error opening file dialog: ${err}`);
     }
   };
 
@@ -179,32 +179,23 @@ function App() {
     setMessage("");
 
     try {
-      // Base timestamp (with seconds added)
-      const baseDate = new Date(selectedDate);
-      baseDate.setSeconds(seconds);
-      const baseTimestamp = Math.floor(baseDate.getTime() / 1000);
+      // Always use individual timestamps
+      const fileTimestamps = files.map(f => ({
+        path: f.path,
+        timestamp: f.customTimestamp !== undefined ? f.customTimestamp : f.modifiedTime,
+      }));
 
-      // Calculate interval in seconds
-      let intervalSeconds = 0;
-      if (intervalValue > 0) {
-        switch (intervalUnit) {
-          case 'seconds':
-            intervalSeconds = intervalValue;
-            break;
-          case 'minutes':
-            intervalSeconds = intervalValue * 60;
-            break;
-          case 'hours':
-            intervalSeconds = intervalValue * 3600;
-            break;
-        }
-      }
-
-      await invoke("set_file_times_with_interval", {
-        files,
-        baseTimestamp,
-        intervalSeconds,
+      await invoke("set_individual_file_times", {
+        fileTimestamps,
       });
+
+      // Clear customTimestamp and update modifiedTime to the set timestamp
+      setFiles(prev => prev.map(f => ({
+        ...f,
+        modifiedTime: f.customTimestamp !== undefined ? f.customTimestamp : f.modifiedTime,
+        customTimestamp: undefined,
+      })));
+
       setMessage(`Successfully updated ${files.length} files!`);
     } catch (error) {
       console.error(error);
@@ -223,65 +214,6 @@ function App() {
       </header>
 
       <main className="flex-1 flex flex-col gap-6">
-        {/* Date Selection */}
-        <section className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-xl p-6 shadow-lg space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-400 mb-2">
-              更新日時
-            </label>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <input
-                  type="datetime-local"
-                  value={selectedDate}
-                  onChange={(e) => setSelectedDate(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg py-3 px-4 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all [color-scheme:dark]"
-                />
-                <Clock className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none w-5 h-5" />
-              </div>
-              <div className="w-24">
-                <input
-                  type="number"
-                  min="0"
-                  max="59"
-                  value={seconds}
-                  onChange={(e) => setSeconds(Math.min(59, Math.max(0, parseInt(e.target.value) || 0)))}
-                  placeholder="秒"
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg py-3 px-4 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-center"
-                />
-                <div className="text-xs text-slate-500 text-center mt-1">秒</div>
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-slate-400 mb-2">
-              間隔設定（複数ファイルを順番に設定）
-            </label>
-            <div className="flex gap-2">
-              <input
-                type="number"
-                value={intervalValue}
-                onChange={(e) => setIntervalValue(parseInt(e.target.value) || 0)}
-                placeholder="0"
-                className="w-32 bg-slate-900 border border-slate-700 rounded-lg py-3 px-4 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-              />
-              <select
-                value={intervalUnit}
-                onChange={(e) => setIntervalUnit(e.target.value as 'seconds' | 'minutes' | 'hours')}
-                className="flex-1 bg-slate-900 border border-slate-700 rounded-lg py-3 px-4 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-              >
-                <option value="seconds">秒</option>
-                <option value="minutes">分</option>
-                <option value="hours">時間</option>
-              </select>
-            </div>
-            <p className="text-xs text-slate-500 mt-2">
-              プラス値: 下に行くほど新しい時刻（昇順） / マイナス値: 下に行くほど古い時刻（降順）
-            </p>
-          </div>
-        </section>
-
         {/* File Drop Zone */}
         <FileDropZone
           onFilesDropped={handleFilesDropped}
@@ -294,16 +226,30 @@ function App() {
           <div className="flex items-center justify-between">
             <div className="flex gap-2">
               <button
-                onClick={() => sortFiles('asc')}
+                onClick={reverseOrder}
                 className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-md text-slate-300 text-sm transition-colors border border-slate-700"
+                title="一覧の順序を逆にする"
               >
-                <ArrowDownAZ className="w-4 h-4" /> Name Asc
+                <ArrowDownUp className="w-4 h-4" />
+                逆順
               </button>
               <button
-                onClick={() => sortFiles('desc')}
-                className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-md text-slate-300 text-sm transition-colors border border-slate-700"
+                onClick={() => setSwapTimestampsOnReorder(!swapTimestampsOnReorder)}
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors border",
+                  swapTimestampsOnReorder
+                    ? "bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border-blue-500/30"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-400 border-slate-700"
+                )}
+                title={swapTimestampsOnReorder
+                  ? "タイムスタンプを入れ替える (有効)"
+                  : "タイムスタンプを入れ替える (無効)"}
               >
-                <ArrowUpAZ className="w-4 h-4" /> Name Desc
+                <ArrowLeftRight className="w-4 h-4" />
+                <span>入れ替え</span>
+                {swapTimestampsOnReorder && (
+                  <span className="text-xs opacity-70">ON</span>
+                )}
               </button>
             </div>
             <div className="flex gap-2">
@@ -311,7 +257,7 @@ function App() {
                 onClick={clearFiles}
                 className="flex items-center gap-2 px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-md text-sm transition-colors border border-red-500/20"
               >
-                <Trash2 className="w-4 h-4" /> Clear All
+                <Trash2 className="w-4 h-4" /> クリア
               </button>
             </div>
           </div>
@@ -330,16 +276,21 @@ function App() {
               onDragEnd={handleDragEnd}
             >
               <SortableContext
-                items={files}
+                items={files.map(f => f.path)}
                 strategy={verticalListSortingStrategy}
               >
                 <div className="flex flex-col gap-2">
                   {files.map((file) => (
                     <SortableItem
-                      key={file}
-                      id={file}
-                      filePath={file}
+                      key={file.path}
+                      id={file.path}
+                      fileInfo={file}
                       onRemove={removeFile}
+                      onTimestampChange={(path: string, timestamp: number) => {
+                        setFiles(prev => prev.map(f =>
+                          f.path === path ? { ...f, customTimestamp: timestamp } : f
+                        ));
+                      }}
                     />
                   ))}
                 </div>
