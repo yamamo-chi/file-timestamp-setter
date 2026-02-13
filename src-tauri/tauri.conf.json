@@ -13,7 +13,7 @@
     "windows": [
       {
         "title": "file-timestamp-setter",
-        "width": 800,
+        "width": 1200,
         "height": 600,
         "dragDropEnabled": true
       }

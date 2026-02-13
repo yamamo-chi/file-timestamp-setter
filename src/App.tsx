@@ -17,10 +17,10 @@ import {
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
-import { format } from "date-fns";
 import { FileDropZone } from "./components/FileDropZone";
 import { SortableItem } from "./components/SortableItem";
-import { ArrowDownUp, Trash2, ArrowLeftRight } from "lucide-react";
+import { TimestampColumnItem } from "./components/TimestampColumnItem";
+import { ArrowDownUp, Trash2 } from "lucide-react";
 import { cn } from "./lib/utils";
 
 interface FileInfo {
@@ -33,7 +33,6 @@ function App() {
   const [files, setFiles] = useState<FileInfo[]>([]);
   const [message, setMessage] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
-  const [swapTimestampsOnReorder, setSwapTimestampsOnReorder] = useState(false);
   const processingFilesRef = useRef<Set<string>>(new Set());
 
   const sensors = useSensors(
@@ -42,6 +41,13 @@ function App() {
       coordinateGetter: sortableKeyboardCoordinates,
     })
   );
+
+  // タイムスタンプを降順（新しい順）でソート
+  const sortedTimestamps = [...files].sort((a, b) => {
+    const timestampA = a.customTimestamp ?? a.modifiedTime;
+    const timestampB = b.customTimestamp ?? b.modifiedTime;
+    return timestampB - timestampA; // 降順
+  });
 
   // Normalize path for comparison (handle different separators and case)
   const normalizePath = (path: string): string => {
@@ -81,7 +87,27 @@ function App() {
         modifiedTime: info.modified_time,
       }));
 
-      setFiles((prev) => [...prev, ...newFileInfos]);
+      // Insert new files at positions that match their timestamp order
+      setFiles((prev) => {
+        // Combine existing and new files
+        const combined = [...prev, ...newFileInfos];
+
+        // Sort by timestamp (descending) to determine position
+        const sorted = [...combined].sort((a, b) => {
+          const timestampA = a.customTimestamp ?? a.modifiedTime;
+          const timestampB = b.customTimestamp ?? b.modifiedTime;
+          return timestampB - timestampA;
+        });
+
+        // For each new file, insert it at its sorted position
+        const result = [...prev];
+        newFileInfos.forEach(newFile => {
+          const sortedIndex = sorted.findIndex(f => f.path === newFile.path);
+          result.splice(sortedIndex, 0, newFile);
+        });
+
+        return result;
+      });
       setMessage("");
     } catch (error) {
       console.error("Failed to get file info:", error);
@@ -100,18 +126,7 @@ function App() {
         const oldIndex = items.findIndex(f => f.path === active.id);
         const newIndex = items.findIndex(f => f.path === over.id);
 
-        const newItems = [...items];
-
-        // Only swap timestamps if the toggle is enabled
-        if (swapTimestampsOnReorder) {
-          const tempTimestamp = newItems[oldIndex].customTimestamp ?? newItems[oldIndex].modifiedTime;
-          const targetTimestamp = newItems[newIndex].customTimestamp ?? newItems[newIndex].modifiedTime;
-
-          newItems[oldIndex] = { ...newItems[oldIndex], customTimestamp: targetTimestamp };
-          newItems[newIndex] = { ...newItems[newIndex], customTimestamp: tempTimestamp };
-        }
-
-        return arrayMove(newItems, oldIndex, newIndex);
+        return arrayMove(items, oldIndex, newIndex);
       });
     }
   };
@@ -179,20 +194,20 @@ function App() {
     setMessage("");
 
     try {
-      // Always use individual timestamps
-      const fileTimestamps = files.map(f => ({
+      // Use positional mapping: files[i] gets timestamp from sortedTimestamps[i]
+      const fileTimestamps = files.map((f, index) => ({
         path: f.path,
-        timestamp: f.customTimestamp !== undefined ? f.customTimestamp : f.modifiedTime,
+        timestamp: sortedTimestamps[index].customTimestamp ?? sortedTimestamps[index].modifiedTime,
       }));
 
       await invoke("set_individual_file_times", {
         fileTimestamps,
       });
 
-      // Clear customTimestamp and update modifiedTime to the set timestamp
-      setFiles(prev => prev.map(f => ({
+      // Clear customTimestamp and update modifiedTime based on positional mapping
+      setFiles(prev => prev.map((f, index) => ({
         ...f,
-        modifiedTime: f.customTimestamp !== undefined ? f.customTimestamp : f.modifiedTime,
+        modifiedTime: sortedTimestamps[index].customTimestamp ?? sortedTimestamps[index].modifiedTime,
         customTimestamp: undefined,
       })));
 
@@ -206,7 +221,7 @@ function App() {
   };
 
   return (
-    <div className="container mx-auto p-6 max-w-3xl min-h-screen flex flex-col gap-6 text-slate-200">
+    <div className="container mx-auto p-6 max-w-5xl min-h-screen flex flex-col gap-6 text-slate-200">
       <header className="flex flex-col gap-2">
         <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
           File Timestamp Setter
@@ -233,24 +248,6 @@ function App() {
                 <ArrowDownUp className="w-4 h-4" />
                 逆順
               </button>
-              <button
-                onClick={() => setSwapTimestampsOnReorder(!swapTimestampsOnReorder)}
-                className={cn(
-                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors border",
-                  swapTimestampsOnReorder
-                    ? "bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border-blue-500/30"
-                    : "bg-slate-800 hover:bg-slate-700 text-slate-400 border-slate-700"
-                )}
-                title={swapTimestampsOnReorder
-                  ? "タイムスタンプを入れ替える (有効)"
-                  : "タイムスタンプを入れ替える (無効)"}
-              >
-                <ArrowLeftRight className="w-4 h-4" />
-                <span>入れ替え</span>
-                {swapTimestampsOnReorder && (
-                  <span className="text-xs opacity-70">ON</span>
-                )}
-              </button>
             </div>
             <div className="flex gap-2">
               <button
@@ -263,7 +260,7 @@ function App() {
           </div>
         )}
 
-        {/* File List */}
+        {/* File List - 2 Column Layout */}
         <div className="flex-1 bg-slate-800/30 border border-slate-700/50 rounded-xl p-4 overflow-y-auto min-h-[200px] max-h-[400px]">
           {files.length === 0 ? (
             <div className="h-full flex items-center justify-center text-slate-500 italic">
@@ -275,26 +272,57 @@ function App() {
               collisionDetection={closestCenter}
               onDragEnd={handleDragEnd}
             >
-              <SortableContext
-                items={files.map(f => f.path)}
-                strategy={verticalListSortingStrategy}
-              >
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* 左列 - ファイル */}
                 <div className="flex flex-col gap-2">
-                  {files.map((file) => (
-                    <SortableItem
-                      key={file.path}
-                      id={file.path}
-                      fileInfo={file}
-                      onRemove={removeFile}
-                      onTimestampChange={(path: string, timestamp: number) => {
-                        setFiles(prev => prev.map(f =>
-                          f.path === path ? { ...f, customTimestamp: timestamp } : f
-                        ));
-                      }}
-                    />
-                  ))}
+                  <div className="flex items-center gap-2 mb-2 px-1">
+                    <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide">
+                      Files
+                    </h3>
+                    <div className="flex-1 h-px bg-slate-700/50"></div>
+                  </div>
+                  <SortableContext
+                    items={files.map(f => f.path)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <div className="flex flex-col gap-2">
+                      {files.map((file) => (
+                        <SortableItem
+                          key={file.path}
+                          id={file.path}
+                          fileInfo={file}
+                          onRemove={removeFile}
+                        />
+                      ))}
+                    </div>
+                  </SortableContext>
                 </div>
-              </SortableContext>
+
+                {/* 右列 - タイムスタンプ */}
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2 mb-2 px-1">
+                    <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wide">
+                      Timestamps
+                    </h3>
+                    <div className="flex-1 h-px bg-slate-700/50"></div>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    {sortedTimestamps.map((file, index) => (
+                      <TimestampColumnItem
+                        key={`${file.path}-${index}`}
+                        fileInfo={file}
+                        onTimestampChange={(path: string, timestamp: number) => {
+                          setFiles(prev => prev.map(f =>
+                            f.path === path
+                              ? { ...f, customTimestamp: timestamp === -1 ? undefined : timestamp }
+                              : f
+                          ));
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
             </DndContext>
           )}
         </div>
