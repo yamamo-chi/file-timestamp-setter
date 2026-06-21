@@ -9,6 +9,8 @@ import {
   useSensor,
   useSensors,
   DragEndEvent,
+  DragStartEvent,
+  DragOverlay,
 } from "@dnd-kit/core";
 import {
   arrayMove,
@@ -17,7 +19,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { FileDropZone } from "./components/FileDropZone";
-import { SortableItem } from "./components/SortableItem";
+import { SortableItem, DragPreviewItem } from "./components/SortableItem";
 import { TimestampColumnItem } from "./components/TimestampColumnItem";
 import { ArrowDownUp, Trash2 } from "lucide-react";
 import { cn } from "./lib/utils";
@@ -33,6 +35,9 @@ function App() {
   const [message, setMessage] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [timestampReversed, setTimestampReversed] = useState(false);
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const anchorIndexRef = useRef<number | null>(null);
   const processingFilesRef = useRef<Set<string>>(new Set());
 
   const sensors = useSensors(
@@ -87,26 +92,13 @@ function App() {
         modifiedTime: info.modifiedTime,
       }));
 
-      // Insert new files at positions that match their timestamp order
       setFiles((prev) => {
-        // Combine existing and new files
         const combined = [...prev, ...newFileInfos];
-
-        // Sort by timestamp (descending) to determine position
-        const sorted = [...combined].sort((a, b) => {
+        return combined.sort((a, b) => {
           const timestampA = a.customTimestamp ?? a.modifiedTime;
           const timestampB = b.customTimestamp ?? b.modifiedTime;
           return timestampB - timestampA;
         });
-
-        // For each new file, insert it at its sorted position
-        const result = [...prev];
-        newFileInfos.forEach(newFile => {
-          const sortedIndex = sorted.findIndex(f => f.path === newFile.path);
-          result.splice(sortedIndex, 0, newFile);
-        });
-
-        return result;
       });
       setMessage("");
     } catch (error) {
@@ -118,26 +110,89 @@ function App() {
     }
   }, [files]);
 
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
+  // FILES列の項目を選択する。Shift押下時はアンカーからの範囲を追加選択
+  const handleSelect = useCallback((path: string, shiftKey: boolean) => {
+    const index = files.findIndex(f => f.path === path);
+    if (index === -1) return;
 
-    if (over && active.id !== over.id) {
-      setFiles((items) => {
+    setSelectedPaths(prev => {
+      const next = new Set(prev);
+      if (shiftKey && anchorIndexRef.current !== null) {
+        const start = Math.min(anchorIndexRef.current, index);
+        const end = Math.max(anchorIndexRef.current, index);
+        for (let i = start; i <= end; i++) {
+          next.add(files[i].path);
+        }
+      } else {
+        if (next.has(path)) {
+          next.delete(path);
+        } else {
+          next.add(path);
+        }
+        anchorIndexRef.current = index;
+      }
+      return next;
+    });
+  }, [files]);
+
+  const handleDragStart = (event: DragStartEvent) => {
+    setActiveId(event.active.id as string);
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    setActiveId(null);
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    setFiles((items) => {
+      // ドラッグ対象が選択に含まれていれば選択分をまとめて移動。そうでなければ単体移動
+      const movingSet = selectedPaths.has(active.id as string)
+        ? selectedPaths
+        : new Set([active.id as string]);
+
+      // 単体移動は従来どおり
+      if (movingSet.size <= 1) {
         const oldIndex = items.findIndex(f => f.path === active.id);
         const newIndex = items.findIndex(f => f.path === over.id);
-
         return arrayMove(items, oldIndex, newIndex);
-      });
-    }
+      }
+
+      // 移動対象を元の並び順を保ったまま抽出し、残りから切り離す（飛ばし選択も詰めて連続化）
+      const moving = items.filter(f => movingSet.has(f.path));
+      const remaining = items.filter(f => !movingSet.has(f.path));
+
+      // ドロップ先が移動対象自身の場合は何もしない
+      let insertAt = remaining.findIndex(f => f.path === over.id);
+      if (insertAt === -1) return items;
+
+      // ドラッグ方向が下向きなら対象の後ろへ挿入
+      const activeIndex = items.findIndex(f => f.path === active.id);
+      const overIndex = items.findIndex(f => f.path === over.id);
+      if (activeIndex < overIndex) insertAt += 1;
+
+      return [
+        ...remaining.slice(0, insertAt),
+        ...moving,
+        ...remaining.slice(insertAt),
+      ];
+    });
   };
 
   const removeFile = (pathToRemove: string) => {
     setFiles(files.filter((f) => f.path !== pathToRemove));
+    setSelectedPaths(prev => {
+      if (!prev.has(pathToRemove)) return prev;
+      const next = new Set(prev);
+      next.delete(pathToRemove);
+      return next;
+    });
   };
 
   const clearFiles = () => {
     setFiles([]);
     setMessage("");
+    setSelectedPaths(new Set());
+    anchorIndexRef.current = null;
   };
 
   const reverseOrder = () => {
@@ -243,6 +298,7 @@ function App() {
             <DndContext
               sensors={sensors}
               collisionDetection={closestCenter}
+              onDragStart={handleDragStart}
               onDragEnd={handleDragEnd}
             >
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -273,6 +329,14 @@ function App() {
                           id={file.path}
                           fileInfo={file}
                           onRemove={removeFile}
+                          isSelected={selectedPaths.has(file.path)}
+                          onSelect={handleSelect}
+                          isGroupDragging={
+                            activeId !== null &&
+                            selectedPaths.has(activeId) &&
+                            selectedPaths.has(file.path) &&
+                            file.path !== activeId
+                          }
                         />
                       ))}
                     </div>
@@ -312,6 +376,28 @@ function App() {
                   </div>
                 </div>
               </div>
+
+              {/* ドラッグ中に選択行を全てカーソルに追従させるオーバーレイ */}
+              <DragOverlay>
+                {activeId && (() => {
+                  const draggingFiles =
+                    selectedPaths.has(activeId) && selectedPaths.size > 1
+                      ? files.filter(f => selectedPaths.has(f.path))
+                      : files.filter(f => f.path === activeId);
+                  return (
+                    <div className="flex flex-col gap-1 shadow-2xl relative" style={{ width: 'var(--radix-popper-available-width, 100%)' }}>
+                      {draggingFiles.length > 1 && (
+                        <div className="absolute -top-2 -right-2 z-10 bg-blue-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold">
+                          {draggingFiles.length}
+                        </div>
+                      )}
+                      {draggingFiles.map(file => (
+                        <DragPreviewItem key={file.path} fileInfo={file} />
+                      ))}
+                    </div>
+                  );
+                })()}
+              </DragOverlay>
             </DndContext>
           )}
         </div>

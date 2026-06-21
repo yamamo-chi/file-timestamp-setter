@@ -15,9 +15,27 @@ interface SortableItemProps {
     id: string;
     fileInfo: FileInfo;
     onRemove: (path: string) => void;
+    isSelected?: boolean;
+    onSelect?: (path: string, shiftKey: boolean) => void;
+    isGroupDragging?: boolean;
 }
 
-export function SortableItem({ id, fileInfo, onRemove }: SortableItemProps) {
+// ドラッグオーバーレイ用の静的プレビューコンポーネント
+export function DragPreviewItem({ fileInfo }: { fileInfo: FileInfo }) {
+    const fileName = fileInfo.path ? fileInfo.path.split(/[/\\]/).pop() : "Unknown";
+    return (
+        <div className="flex items-center gap-3 p-3 rounded-lg border border-blue-500/60 bg-slate-800 min-h-[76px]">
+            <GripVertical className="w-5 h-5 text-slate-500" />
+            <FileIcon className="w-5 h-5 text-blue-400 shrink-0" />
+            <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-200 truncate" title={fileName}>{fileName}</p>
+                <p className="text-xs text-slate-500 truncate mt-0.5" title={fileInfo.path}>{fileInfo.path}</p>
+            </div>
+        </div>
+    );
+}
+
+export function SortableItem({ id, fileInfo, onRemove, isSelected = false, onSelect, isGroupDragging = false }: SortableItemProps) {
     const {
         attributes,
         listeners,
@@ -33,8 +51,8 @@ export function SortableItem({ id, fileInfo, onRemove }: SortableItemProps) {
     const style = {
         transform: CSS.Transform.toString(transform),
         transition,
-        zIndex: isDragging ? 10 : 1,
-        opacity: isDragging ? 0.5 : 1,
+        // DragOverlay がビジュアルを担うため、ドラッグ中の元行は非表示にしてプレースホルダーにする
+        opacity: isDragging || isGroupDragging ? 0 : 1,
     };
 
     // Extract filename from path for display
@@ -65,14 +83,18 @@ export function SortableItem({ id, fileInfo, onRemove }: SortableItemProps) {
             ref={setNodeRef}
             style={style}
             {...attributes}
+            onClick={(e) => onSelect?.(fileInfo.path, e.shiftKey)}
             className={cn(
-                "group relative flex items-center gap-3 p-3 rounded-lg border border-slate-700/50 bg-slate-800/40 hover:bg-slate-800/80 transition-colors",
+                "group relative flex items-center gap-3 p-3 rounded-lg border transition-colors cursor-pointer select-none",
                 "min-h-[76px]",
-                isDragging && "shadow-xl ring-2 ring-blue-500/50 bg-slate-800 z-10"
+                isSelected
+                    ? "border-blue-500/60 bg-blue-500/15 hover:bg-blue-500/20"
+                    : "border-slate-700/50 bg-slate-800/40 hover:bg-slate-800/80"
             )}
         >
             <div
                 {...listeners}
+                onClick={(e) => e.stopPropagation()}
                 className="text-slate-600 group-hover:text-slate-400 p-1 cursor-grab active:cursor-grabbing touch-none"
             >
                 <GripVertical className="w-5 h-5" />
