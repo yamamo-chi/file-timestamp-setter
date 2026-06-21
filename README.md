@@ -1,25 +1,19 @@
-# デバッグ実行手順
+# README
 
-```bash
-npm run tauri dev
-```
+## About
 
-# リリースビルド手順
+This is the official Wails React-TS template.
 
-```bash
-npm run tauri build
-```
+You can configure the project by editing `wails.json`. More information about the project settings can be found
+here: https://wails.io/docs/reference/project-config
 
-## 配布パッケージ場所
+## Live Development
 
-### ポータブル版
+To run in live development mode, run `wails dev` in the project directory. This will run a Vite development
+server that will provide very fast hot reload of your frontend changes. If you want to develop in a browser
+and have access to your Go methods, there is also a dev server that runs on http://localhost:34115. Connect
+to this in your browser, and you can call your Go code from devtools.
 
-```bash
-src-tauri/target/release/file-timestamp-setter.exe
-```
+## Building
 
-### インストーラー形式
-
-```bash
-src-tauri/target/release/bundle
-```
+To build a redistributable, production mode package, use `wails build`.
