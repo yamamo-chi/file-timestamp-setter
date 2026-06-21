@@ -32,6 +32,7 @@ function App() {
   const [files, setFiles] = useState<FileInfo[]>([]);
   const [message, setMessage] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [timestampReversed, setTimestampReversed] = useState(false);
   const processingFilesRef = useRef<Set<string>>(new Set());
 
   const sensors = useSensors(
@@ -41,12 +42,15 @@ function App() {
     })
   );
 
-  // タイムスタンプを降順（新しい順）でソート
-  const sortedTimestamps = [...files].sort((a, b) => {
-    const timestampA = a.customTimestamp ?? a.modifiedTime;
-    const timestampB = b.customTimestamp ?? b.modifiedTime;
-    return timestampB - timestampA; // 降順
-  });
+  // タイムスタンプを降順（新しい順）でソート。逆順フラグが立っていれば反転（昇順）
+  const sortedTimestamps = (() => {
+    const sorted = [...files].sort((a, b) => {
+      const timestampA = a.customTimestamp ?? a.modifiedTime;
+      const timestampB = b.customTimestamp ?? b.modifiedTime;
+      return timestampB - timestampA; // 降順
+    });
+    return timestampReversed ? sorted.reverse() : sorted;
+  })();
 
   // Normalize path for comparison (handle different separators and case)
   const normalizePath = (path: string): string => {
@@ -140,6 +144,10 @@ function App() {
     setFiles((prev) => [...prev].reverse());
   };
 
+  const reverseTimestamps = () => {
+    setTimestampReversed((prev) => !prev);
+  };
+
   React.useEffect(() => {
     // Listen for file drop events from Wails
     OnFileDrop((_x: number, _y: number, paths: string[]) => {
@@ -213,17 +221,7 @@ function App() {
 
         {/* File List Controls */}
         {files.length > 0 && (
-          <div className="flex items-center justify-between">
-            <div className="flex gap-2">
-              <button
-                onClick={reverseOrder}
-                className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-md text-slate-300 text-sm transition-colors border border-slate-700"
-                title="一覧の順序を逆にする"
-              >
-                <ArrowDownUp className="w-4 h-4" />
-                逆順
-              </button>
-            </div>
+          <div className="flex items-center justify-end">
             <div className="flex gap-2">
               <button
                 onClick={clearFiles}
@@ -255,6 +253,14 @@ function App() {
                       Files
                     </h3>
                     <div className="flex-1 h-px bg-slate-700/50"></div>
+                    <button
+                      onClick={reverseOrder}
+                      className="flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded-md text-slate-300 text-xs transition-colors border border-slate-700 shrink-0"
+                      title="ファイルの順序を逆にする"
+                    >
+                      <ArrowDownUp className="w-3.5 h-3.5" />
+                      逆順
+                    </button>
                   </div>
                   <SortableContext
                     items={files.map(f => f.path)}
@@ -280,6 +286,14 @@ function App() {
                       Timestamps
                     </h3>
                     <div className="flex-1 h-px bg-slate-700/50"></div>
+                    <button
+                      onClick={reverseTimestamps}
+                      className="flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded-md text-slate-300 text-xs transition-colors border border-slate-700 shrink-0"
+                      title="タイムスタンプの並び順を逆にする"
+                    >
+                      <ArrowDownUp className="w-3.5 h-3.5" />
+                      {timestampReversed ? "昇順" : "降順"}
+                    </button>
                   </div>
                   <div className="flex flex-col gap-2">
                     {sortedTimestamps.map((file, index) => (

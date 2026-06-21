@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react';
+import { useState, useRef, type CSSProperties } from 'react';
 import { Upload } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -9,6 +9,11 @@ interface FileDropZoneProps {
 
 export function FileDropZone({ onFilesDropped: _onFilesDropped, onClick, className }: FileDropZoneProps & { onClick?: () => void }) {
     const [isDragging, setIsDragging] = useState(false);
+    // Counts nested dragenter/dragleave events. Dragging over child elements fires
+    // dragleave on the parent immediately followed by dragenter, which would otherwise
+    // toggle isDragging rapidly and cause flickering. We only clear the dragging state
+    // once the counter returns to 0 (i.e. the drag truly left the drop zone).
+    const dragCounter = useRef(0);
 
     // Wails handles file drops via the 'OnFileDrop' runtime event at the window level.
     // This component only provides visual feedback for drag states.
@@ -28,14 +33,21 @@ export function FileDropZone({ onFilesDropped: _onFilesDropped, onClick, classNa
             )}
             onClick={onClick}
             onDragEnter={() => {
+                dragCounter.current += 1;
                 setIsDragging(true);
             }}
             onDragOver={(e) => {
                 e.preventDefault(); // Necessary to allow drop
-                if (!isDragging) setIsDragging(true);
             }}
-            onDragLeave={() => setIsDragging(false)}
+            onDragLeave={() => {
+                dragCounter.current -= 1;
+                if (dragCounter.current <= 0) {
+                    dragCounter.current = 0;
+                    setIsDragging(false);
+                }
+            }}
             onDrop={() => {
+                dragCounter.current = 0;
                 setIsDragging(false);
             }}
         >
